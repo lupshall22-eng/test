@@ -36,7 +36,7 @@ TELEGRAM_WEBHOOK_SECRET = os.getenv("TELEGRAM_WEBHOOK_SECRET", "")
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 ENJIN_API = os.getenv("ENJIN_GRAPHQL", "https://platform.enjin.io/graphql")
 ENJIN_API_KEY = os.getenv("ENJIN_API_KEY")
-WEBAPP_URL = os.getenv("WEBAPP_URL", "").strip()  # e.g., https://your-domain.tld/web/index.html
+WEBAPP_URL = os.getenv("WEBAPP_URL", "https://test-97pb.onrender.com/web/index.html").strip()  # e.g., https://your-domain.tld/web/index.html
 
 # External WebApp DB endpoint to save wallets
 WEBAPP_WALLET_ENDPOINT = os.getenv("WEBAPP_WALLET_ENDPOINT", "").strip()
@@ -657,7 +657,9 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     webapp_row = []
     if WEBAPP_URL:
         webapp_row = [InlineKeyboardButton("🚀 Open Web App", web_app=WebAppInfo(url=WEBAPP_URL))]
-    open_webapp = InlineKeyboardMarkup([webapp_row]) if webapp_row else None
+    open_webapp = InlineKeyboardMarkup.from_button(
+    InlineKeyboardButton("Open Dice Dash", web_app=WebAppInfo(url=WEBAPP_URL))
+)
 
     if last == "progress" and u.get("progress"):
         p = dict(u["progress"]); p["have"] = set(p.get("have", []))
@@ -1509,3 +1511,4 @@ if __name__ == "__main__":
     import uvicorn
     # IMPORTANT: module path must match your file location (New/main.py → "New.main")
     uvicorn.run("New.main:fastapi_app", host="0.0.0.0", port=PORT, reload=False)
+
