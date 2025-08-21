@@ -1193,15 +1193,18 @@ fastapi_app.add_middleware(
     allow_headers=["*"],
 )
 
-# Static mounts (if folders exist)
-_FILE_DIR = pathlib.Path(__file__).resolve().parent
-_PROJECT_ROOT = _FILE_DIR.parent
-_STATIC_DIR = _PROJECT_ROOT / "static"
-_WEB_DIR = _PROJECT_ROOT / "web"
+# Static mounts (serve from New/ since web/ and static/ live here)
+_FILE_DIR = pathlib.Path(__file__).resolve().parent     # .../New
+_STATIC_DIR = _FILE_DIR / "static"                      # New/static
+_WEB_DIR    = _FILE_DIR / "web"                         # New/web
+
 if _STATIC_DIR.exists():
     fastapi_app.mount("/static", StaticFiles(directory=_STATIC_DIR), name="static")
+
+# html=True lets /web/ resolve to index.html automatically
 if _WEB_DIR.exists():
-    fastapi_app.mount("/web", StaticFiles(directory=_WEB_DIR), name="web")
+    fastapi_app.mount("/web", StaticFiles(directory=_WEB_DIR, html=True), name="web")
+
 
 # Health (single route)
 @fastapi_app.api_route("/", methods=["GET", "HEAD"])
@@ -1523,6 +1526,7 @@ if __name__ == "__main__":
     import uvicorn
     # IMPORTANT: module path must match your file location (New/main.py → "New.main")
     uvicorn.run("New.main:fastapi_app", host="0.0.0.0", port=PORT, reload=False)
+
 
 
 
