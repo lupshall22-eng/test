@@ -128,6 +128,14 @@ function lockButton(seconds){
     }
   }, 1000);
 }
+  // in your front end before calling /config or /roll:
+const tg = window.Telegram?.WebApp;
+const uid = tg?.initDataUnsafe?.user?.id; // numeric, if available
+
+fetch(`${API_BASE}/config`, {
+  headers: uid ? { "X-Tg-Id": String(uid) } : {}
+});
+
 
 async function loadConfig(){
   try{
@@ -217,3 +225,4 @@ loadSnapshot();
 </script>
 </body>
 </html>
+
