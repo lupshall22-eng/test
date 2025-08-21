@@ -1136,28 +1136,28 @@ def main():
 # =========================
 # Application factory (PTB)
 # =========================
-def build_application() -> Application:
-    app = Application.builder().token(TELEGRAM_TOKEN).build()
+    def build_application() -> Application:
+        app = Application.builder().token(TELEGRAM_TOKEN).build()
 
     # Commands
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("connect", connect))
-    app.add_handler(CommandHandler("disconnect", disconnect))
-    app.add_handler(CommandHandler("mywallet", mywallet))
-    app.add_handler(CommandHandler("mycollections", mycollections))
-    app.add_handler(CommandHandler("setcollection", setcollection))
-    app.add_handler(CommandHandler("collections", collections_cmd))
-    app.add_handler(CommandHandler("findcollection", findcollection))
+        app.add_handler(CommandHandler("start", start))
+        app.add_handler(CommandHandler("connect", connect))
+        app.add_handler(CommandHandler("disconnect", disconnect))
+        app.add_handler(CommandHandler("mywallet", mywallet))
+        app.add_handler(CommandHandler("mycollections", mycollections))
+        app.add_handler(CommandHandler("setcollection", setcollection))
+        app.add_handler(CommandHandler("collections", collections_cmd))
+        app.add_handler(CommandHandler("findcollection", findcollection))
 
     # Callback queries (collections)
-    app.add_handler(CallbackQueryHandler(button_handler))
+        app.add_handler(CallbackQueryHandler(button_handler))
 
     # Text taps & capture search term
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, capture_find_term), group=0)
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, on_reply_button), group=1)
+        app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, capture_find_term), group=0)
+        app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, on_reply_button), group=1)
 
     # WebApp data
-    app.add_handler(MessageHandler(filters.StatusUpdate.WEB_APP_DATA, handle_webapp_data))
+        app.add_handler(MessageHandler(filters.StatusUpdate.WEB_APP_DATA, handle_webapp_data))
 
     # Hourly collections refresh
     try:
@@ -1236,6 +1236,7 @@ if __name__ == "__main__":
     import uvicorn
     # IMPORTANT: module path must match your file location (New/main.py → "New.main")
     uvicorn.run("New.main:fastapi_app", host="0.0.0.0", port=PORT, reload=False)
+
 
 
 
