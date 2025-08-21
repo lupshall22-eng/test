@@ -1133,6 +1133,9 @@ def main():
         except Exception as e:
             print(f"⚠️ Migration failed: {e}")
 
+# =========================
+# Application factory (PTB)
+# =========================
 def build_application() -> Application:
     app = Application.builder().token(TELEGRAM_TOKEN).build()
 
@@ -1153,57 +1156,87 @@ def build_application() -> Application:
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, capture_find_term), group=0)
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, on_reply_button), group=1)
 
-    # WebApp data (sent by the web app via WebApp.sendData)
+    # WebApp data
     app.add_handler(MessageHandler(filters.StatusUpdate.WEB_APP_DATA, handle_webapp_data))
 
-    # Hourly collections refresh (best effort)
+    # Hourly collections refresh
     try:
         app.job_queue.run_repeating(hourly_collections_refresh, interval=3600, first=10)
     except Exception:
         print("ℹ️ JobQueue not available. Skipping hourly refresh.")
-    
+
     return app
 
-    print("Bot starting… Press Ctrl+C to stop.")
-    app.run_polling()
-# === FastAPI wrapper for Render ===
+
+# =========================
+# FastAPI wrapper for Render
+# =========================
+# Ensure these are defined near your top imports:
+# PUBLIC_URL = os.getenv("PUBLIC_URL", "").rstrip("/")
+# PORT = int(os.getenv("PORT", "10000"))
+# TELEGRAM_WEBHOOK_SECRET = os.getenv("TELEGRAM_WEBHOOK_SECRET", "")
+
+from fastapi import FastAPI, Request
+from telegram import Update
+
 fastapi_app = FastAPI()
-application = build_application()  # PTB Application
+application = build_application()  # PTB Application instance
+
 
 @fastapi_app.on_event("startup")
 async def _on_startup():
-    # Start PTB without polling/webhook server; we’ll feed updates manually
+    # Start PTB without polling; we'll feed it updates from FastAPI
     await application.initialize()
     await application.start()
-    # Set Telegram webhook to our public URL
+
+    # Set Telegram webhook to our public URL so Telegram sends updates to /webhook
     if PUBLIC_URL:
-        await application.bot.set_webhook(
-            url=f"{PUBLIC_URL}/webhook",
-            secret_token=(TELEGRAM_WEBHOOK_SECRET or None),
-            drop_pending_updates=True,
-        )
+        try:
+            await application.bot.set_webhook(
+                url=f"{PUBLIC_URL}/webhook",
+                secret_token=(TELEGRAM_WEBHOOK_SECRET or None),
+                drop_pending_updates=True,
+            )
+            print(f"✅ Webhook set to {PUBLIC_URL}/webhook")
+        except Exception as e:
+            print(f"⚠️ Failed to set webhook: {e}")
+    else:
+        print("⚠️ PUBLIC_URL not set; webhook will not be configured.")
+
 
 @fastapi_app.on_event("shutdown")
 async def _on_shutdown():
-    await application.stop()
-    await application.shutdown()
+    try:
+        await application.stop()
+        await application.shutdown()
+    except Exception:
+        pass
+
 
 @fastapi_app.get("/")
 async def health():
     return {"ok": True, "service": "telegram-bot"}
 
+
 @fastapi_app.post("/webhook")
 async def telegram_webhook(request: Request):
+    # Fast path for Telegram updates → feed into PTB
     data = await request.json()
     update = Update.de_json(data, application.bot)
-    # Let PTB process this update
     await application.process_update(update)
     return {"ok": True}
 
+
+# =========================
+# Local dev entrypoint
+# =========================
 if __name__ == "__main__":
-    # Local dev: run a server you can test with (e.g., via ngrok)
+    # For local testing: run an HTTP server (visit http://localhost:PORT/)
+    # Use something like ngrok to expose PUBLIC_URL and test webhooks locally.
     import uvicorn
+    # IMPORTANT: module path must match your file location (New/main.py → "New.main")
     uvicorn.run("New.main:fastapi_app", host="0.0.0.0", port=PORT, reload=False)
+
 
 
 
