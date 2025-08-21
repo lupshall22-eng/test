@@ -1180,6 +1180,49 @@ from fastapi import FastAPI, Request
 from telegram import Update
 
 fastapi_app = FastAPI()
+# ---- WebApp API endpoints (paste directly below fastapi_app = FastAPI()) ----
+from pydantic import BaseModel
+from fastapi import HTTPException, Header, Depends
+from typing import Optional
+
+class WalletIn(BaseModel):
+    telegram_id: int
+    username: Optional[str] = ""
+    wallet_address: str
+
+def require_api_key(x_api_key: Optional[str] = Header(None)):
+    expected = os.getenv("WEBAPP_API_KEY", "").strip()
+    if not expected:
+        # If not configured, allow only if you want to keep developing without a key.
+        # To hard-enforce, replace the next line with:
+        # raise HTTPException(status_code=500, detail="Server missing WEBAPP_API_KEY")
+        return
+    if x_api_key != expected:
+        raise HTTPException(status_code=401, detail="Invalid API key")
+
+@fastapi_app.post("/api/wallets")
+async def save_wallet(payload: WalletIn, _=Depends(require_api_key)):
+    # super basic validation
+    w = (payload.wallet_address or "").strip()
+    if not (w and len(w) >= 10):
+        raise HTTPException(status_code=400, detail="wallet_address looks invalid")
+
+    try:
+        # upsert into your existing SQLite users table via helper you already have
+        cache_user_wallet(
+            user_id=payload.telegram_id,
+            username=(payload.username or "").strip(),
+            wallet=w,
+        )
+        return {"ok": True}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"DB error: {e}")
+
+# Optional: allow HEAD on health to silence 405s in logs
+@fastapi_app.api_route("/", methods=["GET", "HEAD"])
+async def health_head_get():
+    return {"ok": True, "service": "telegram-bot"}
+
 application = build_application()  # PTB Application instance
 
 
@@ -1236,6 +1279,7 @@ if __name__ == "__main__":
     import uvicorn
     # IMPORTANT: module path must match your file location (New/main.py → "New.main")
     uvicorn.run("New.main:fastapi_app", host="0.0.0.0", port=PORT, reload=False)
+
 
 
 
