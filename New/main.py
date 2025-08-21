@@ -1,8 +1,13 @@
-# === main.py (WebApp + caches + external wallet save) ===
-import os, time, json, asyncio, sqlite3, requests
+# === main.py (WebApp + caches + external wallet save + Dice API merged) ===
+import os, time, json, asyncio, sqlite3, requests, random, pathlib
 from pathlib import Path
 from collections import defaultdict
+from datetime import datetime, timezone, date
+from typing import Optional
+
 from dotenv import load_dotenv
+
+# Telegram
 from telegram import (
     Update,
     InlineKeyboardButton, InlineKeyboardMarkup,
@@ -13,12 +18,34 @@ from telegram.ext import (
     Application, CommandHandler, CallbackQueryHandler,
     MessageHandler, ContextTypes, filters,
 )
-from fastapi import FastAPI, Request
-from telegram import Update
-# existing imports stay
+
+# FastAPI
+from fastapi import FastAPI, Request, Header, HTTPException, Depends
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
+from fastapi.responses import FileResponse, JSONResponse
+from pydantic import BaseModel
+
+# ─────────────────────────────────────────────
+# Env
+load_dotenv()
 PUBLIC_URL = os.getenv("PUBLIC_URL", "").rstrip("/")
 PORT = int(os.getenv("PORT", "10000"))
 TELEGRAM_WEBHOOK_SECRET = os.getenv("TELEGRAM_WEBHOOK_SECRET", "")
+
+TELEGRAM_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
+ENJIN_API = os.getenv("ENJIN_GRAPHQL", "https://platform.enjin.io/graphql")
+ENJIN_API_KEY = os.getenv("ENJIN_API_KEY")
+WEBAPP_URL = os.getenv("WEBAPP_URL", "").strip()  # e.g., https://your-domain.tld/web/index.html
+
+# External WebApp DB endpoint to save wallets
+WEBAPP_WALLET_ENDPOINT = os.getenv("WEBAPP_WALLET_ENDPOINT", "").strip()
+WEBAPP_API_KEY = os.getenv("WEBAPP_API_KEY", "").strip()
+
+if not TELEGRAM_TOKEN:
+    raise SystemExit("Missing TELEGRAM_BOT_TOKEN in .env")
+if not ENJIN_API_KEY:
+    raise SystemExit("Missing ENJIN_API_KEY in .env")
 
 # ─────────────────────────────────────────────
 # In-memory state
@@ -36,8 +63,6 @@ TOKEN_CACHE: dict[str, dict] = {}  # {cid: {"ids":[...], "ts": float}}
 # ---- Fast caches ----
 OWNED_CACHE: dict[int, dict] = {}  # {telegram_user_id: {"ts": float, "owned": dict[str,set[str]]}}
 OWNED_MAX_AGE = 300  # 5 minutes
-
-# unify token cache age
 TOKEN_CACHE_MAX_AGE = 1800  # 30 minutes
 
 # Paths
@@ -48,25 +73,8 @@ APP_DB        = DATA_DIR / "app.db"          # tiny local cache for speed
 COLLECTIONS_JSON = Path("collections.json")  # optional backup/export
 
 # ─────────────────────────────────────────────
-# Config
-load_dotenv()
-TELEGRAM_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
-ENJIN_API = os.getenv("ENJIN_GRAPHQL", "https://platform.enjin.io/graphql")
-ENJIN_API_KEY = os.getenv("ENJIN_API_KEY")
-WEBAPP_URL = os.getenv("WEBAPP_URL", "").strip()  # e.g., https://your-domain.tld/app/
-
-# External WebApp DB endpoint to save wallets (NEW)
-WEBAPP_WALLET_ENDPOINT = os.getenv("WEBAPP_WALLET_ENDPOINT", "").strip()  # e.g., https://your-domain.tld/api/wallets
-WEBAPP_API_KEY = os.getenv("WEBAPP_API_KEY", "").strip()  # optional shared secret
-
-if not TELEGRAM_TOKEN:
-    raise SystemExit("Missing TELEGRAM_BOT_TOKEN in .env")
-if not ENJIN_API_KEY:
-    raise SystemExit("Missing ENJIN_API_KEY in .env")
-
-# If your key requires "Bearer ", set this True:
+# Enjin config
 USE_BEARER = False
-
 def gql_headers():
     if USE_BEARER:
         tok = ENJIN_API_KEY if ENJIN_API_KEY.startswith("Bearer ") else f"Bearer {ENJIN_API_KEY}"
@@ -74,20 +82,12 @@ def gql_headers():
         tok = ENJIN_API_KEY
     return {"Authorization": tok, "Content-Type": "application/json"}
 
-# OUTBOUND: save wallet to your WebApp DB (NEW)
+# OUTBOUND: save wallet to your WebApp DB
 def post_wallet_to_webapp(telegram_id: int, username: str | None, wallet: str) -> None:
-    """
-    Sends the wallet address to your WebApp's DB via HTTP POST.
-    Non-blocking: logs but never raises to callers.
-    """
     if not WEBAPP_WALLET_ENDPOINT:
         print("ℹ️ WEBAPP_WALLET_ENDPOINT not set; skipping external wallet save.")
         return
-    payload = {
-        "telegram_id": telegram_id,
-        "username": username or "",
-        "wallet_address": wallet,
-    }
+    payload = {"telegram_id": telegram_id, "username": username or "", "wallet_address": wallet}
     headers = {"Content-Type": "application/json"}
     if WEBAPP_API_KEY:
         headers["X-API-Key"] = WEBAPP_API_KEY
@@ -238,7 +238,7 @@ def collections_all_ids() -> list[str]:
     conn.close()
     return out
 
-# app.db for generic user cache (kept for speed)
+# app.db for generic user cache (kept)
 def init_app_db():
     conn = get_conn(APP_DB)
     cur = conn.cursor()
@@ -682,6 +682,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/mycollections – List owned collections\n"
         "/mywallet – Show wallet\n"
         "/disconnect – Forget saved wallet\n"
+        "/syncwallet – Push wallet to WebApp DB\n"
     )
     await show_main_keyboard(update, "Welcome! Tap a button or use a command.\n\n" + msg)
     if open_webapp:
@@ -701,15 +702,12 @@ async def connect(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if d and d.get("verified"):
             addr = d["account"]["address"]
 
-            # 1) Save to in-memory & persistent state (unchanged)
             uid = update.effective_user.id
             USER_ADDRESS[uid] = addr
             u = user_state(uid); u["address"] = addr; save_state()
 
-            # 2) Keep fast local cache for speed (unchanged)
             cache_user_wallet(uid, update.effective_user.username, addr)
 
-            # 3) NEW: push to your WebApp DB (off-thread)
             def _push():
                 post_wallet_to_webapp(uid, update.effective_user.username, addr)
             await asyncio.to_thread(_push)
@@ -734,20 +732,13 @@ async def mywallet(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def syncwallet(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = update.effective_user.id
     username = update.effective_user.username or str(uid)
-    # try cached first, then in-memory
     wallet = get_cached_wallet(uid) or USER_ADDRESS.get(uid)
     if not wallet:
         await update.message.reply_text("No wallet saved yet. Use /connect first.")
         return
-
-    # re-cache (keeps username up to date)
     cache_user_wallet(uid, username, wallet)
-
-    # push to external WebApp DB
-    def _push():
-        post_wallet_to_webapp(uid, update.effective_user.username, wallet)
+    def _push(): post_wallet_to_webapp(uid, update.effective_user.username, wallet)
     await asyncio.to_thread(_push)
-
     await update.message.reply_text("✅ Wallet sync requested. Check your web app DB/logs.")
 
 async def mycollections(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1140,21 +1131,7 @@ async def hourly_collections_refresh(context: ContextTypes.DEFAULT_TYPE):
         print(f"⚠️ Error refreshing collections: {e}")
 
 # ─────────────────────────────────────────────
-# Dispatcher + main
-def main():
-    # migrate from JSON once (if exists)
-    if COLLECTIONS_JSON.exists():
-        try:
-            existing = json.loads(COLLECTIONS_JSON.read_text("utf-8"))
-            rows = [(e["id"], e["name"]) for e in existing if "id" in e and "name" in e]
-            collections_upsert(rows)
-            print(f"📦 Migrated {len(rows)} collections from JSON → DB")
-        except Exception as e:
-            print(f"⚠️ Migration failed: {e}")
-
-# =========================
-# Application factory (PTB)
-# =========================
+# Dispatcher
 def build_application() -> Application:
     app = Application.builder().token(TELEGRAM_TOKEN).build()
 
@@ -1168,7 +1145,6 @@ def build_application() -> Application:
     app.add_handler(CommandHandler("collections", collections_cmd))
     app.add_handler(CommandHandler("findcollection", findcollection))
     app.add_handler(CommandHandler("syncwallet", syncwallet))
-
 
     # Callback queries (collections)
     app.add_handler(CallbackQueryHandler(button_handler))
@@ -1188,24 +1164,274 @@ def build_application() -> Application:
 
     return app
 
+# ─────────────────────────────────────────────
+# FastAPI app (bot + dice API + static)
+fastapi_app = FastAPI(title="Telegram Bot + Dice API")
 
-# =========================
-# FastAPI wrapper for Render
-# =========================
-# Ensure these are defined near your top imports:
-# PUBLIC_URL = os.getenv("PUBLIC_URL", "").rstrip("/")
-# PORT = int(os.getenv("PORT", "10000"))
-# TELEGRAM_WEBHOOK_SECRET = os.getenv("TELEGRAM_WEBHOOK_SECRET", "")
+# CORS
+FRONTEND_ORIGINS = os.getenv("FRONTEND_ORIGINS", "*")
+_allow_origins = [o.strip() for o in FRONTEND_ORIGINS.split(",")] if FRONTEND_ORIGINS else ["*"]
+fastapi_app.add_middleware(
+    CORSMiddleware,
+    allow_origins=_allow_origins,
+    allow_credentials=False,
+    allow_methods=["GET", "POST", "OPTIONS"],
+    allow_headers=["*"],
+)
 
-from fastapi import FastAPI, Request
-from telegram import Update
+# Static mounts (if folders exist)
+_FILE_DIR = pathlib.Path(__file__).resolve().parent
+_PROJECT_ROOT = _FILE_DIR.parent
+_STATIC_DIR = _PROJECT_ROOT / "static"
+_WEB_DIR = _PROJECT_ROOT / "web"
+if _STATIC_DIR.exists():
+    fastapi_app.mount("/static", StaticFiles(directory=_STATIC_DIR), name="static")
+if _WEB_DIR.exists():
+    fastapi_app.mount("/web", StaticFiles(directory=_WEB_DIR), name="web")
 
-fastapi_app = FastAPI()
-# ---- WebApp API endpoints (paste directly below fastapi_app = FastAPI()) ----
-from pydantic import BaseModel
-from fastapi import HTTPException, Header, Depends
-from typing import Optional
+# Health (single route)
+@fastapi_app.api_route("/", methods=["GET", "HEAD"])
+async def health():
+    return {"ok": True, "service": "telegram-bot + dice-api"}
 
+# Optional: serve /leaderboard page if present
+@fastapi_app.get("/leaderboard")
+async def serve_leaderboard_page():
+    path = _WEB_DIR / "leaderboard.html"
+    if not path.exists():
+        raise HTTPException(status_code=404, detail=f"leaderboard.html not found at {path}")
+    return FileResponse(path)
+
+# ─────────────────────────────────────────────
+# Dice game (DB + routes)
+MAX_DAILY = int(os.getenv("MAX_DAILY", "50"))
+COOLDOWN_S = float(os.getenv("COOLDOWN_S", "4"))
+TEST_USER_ID = int(os.getenv("TEST_USER_ID", "12345"))  # dev fallback
+
+_DB_PATH = pathlib.Path(os.getenv("DATABASE_PATH", _FILE_DIR / "storage" / "dice.db")).resolve()
+
+def _init_db():
+    _DB_PATH.parent.mkdir(parents=True, exist_ok=True)
+    with sqlite3.connect(_DB_PATH, timeout=10) as conn:
+        conn.execute("PRAGMA busy_timeout=5000;")
+        conn.executescript("""
+        PRAGMA journal_mode=WAL;
+        CREATE TABLE IF NOT EXISTS users (
+          telegram_id INTEGER PRIMARY KEY,
+          username TEXT,
+          first_name TEXT,
+          last_name TEXT,
+          created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+        );
+        CREATE TABLE IF NOT EXISTS wallets (
+          telegram_id INTEGER PRIMARY KEY,
+          address TEXT NOT NULL,
+          updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+        );
+        CREATE TABLE IF NOT EXISTS rolls (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          telegram_id INTEGER NOT NULL,
+          date_utc TEXT NOT NULL,
+          roll_index INTEGER NOT NULL,
+          d1 INTEGER NOT NULL,
+          d2 INTEGER NOT NULL,
+          total INTEGER NOT NULL,
+          created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+          UNIQUE(telegram_id, date_utc, roll_index)
+        );
+        CREATE TABLE IF NOT EXISTS daily_totals (
+          telegram_id INTEGER NOT NULL,
+          date_utc TEXT NOT NULL,
+          total_score INTEGER NOT NULL DEFAULT 0,
+          rolls_count INTEGER NOT NULL DEFAULT 0,
+          finalized_at DATETIME,
+          PRIMARY KEY (telegram_id, date_utc)
+        );
+        CREATE TABLE IF NOT EXISTS weekly_totals (
+          telegram_id INTEGER NOT NULL,
+          week_id TEXT NOT NULL,
+          total_score INTEGER NOT NULL DEFAULT 0,
+          days_played INTEGER NOT NULL DEFAULT 0,
+          PRIMARY KEY (telegram_id, week_id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_rolls_user_day  ON rolls(telegram_id, date_utc);
+        CREATE INDEX IF NOT EXISTS idx_rolls_user_time ON rolls(created_at);
+        CREATE INDEX IF NOT EXISTS idx_daily_date_score ON daily_totals(date_utc, total_score DESC);
+        CREATE INDEX IF NOT EXISTS idx_week_week_score  ON weekly_totals(week_id, total_score DESC);
+        CREATE TABLE IF NOT EXISTS roll_requests (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          telegram_id INTEGER NOT NULL,
+          key TEXT NOT NULL,
+          response_json TEXT NOT NULL,
+          created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+          UNIQUE(telegram_id, key)
+        );
+        CREATE INDEX IF NOT EXISTS idx_rollreq_user_time ON roll_requests(telegram_id, created_at);
+        """)
+        conn.commit()
+
+def _db():
+    _DB_PATH.parent.mkdir(parents=True, exist_ok=True)
+    return sqlite3.connect(_DB_PATH, timeout=10)
+
+_init_db()
+
+def _today_utc_str() -> str:
+    return datetime.now(timezone.utc).date().isoformat()
+
+def _week_id(dt: Optional[date] = None) -> str:
+    d = dt or datetime.now(timezone.utc).date()
+    y, wk, _ = d.isocalendar()
+    return f"{y}-W{wk:02d}"
+
+def _rolls_used_today(user_id: int) -> int:
+    with _db() as conn:
+        cur = conn.execute("SELECT COUNT(*) FROM rolls WHERE telegram_id=? AND date_utc=?", (user_id, _today_utc_str()))
+        return int(cur.fetchone()[0])
+
+def _seconds_since_last_roll(user_id: int) -> float:
+    with _db() as conn:
+        cur = conn.execute(
+            "SELECT strftime('%s','now') - strftime('%s', MAX(created_at)) FROM rolls WHERE telegram_id=?",
+            (user_id,)
+        )
+        val = cur.fetchone()[0]
+        try:
+            return float(val if val is not None else 10_000.0)
+        except Exception:
+            return 10_000.0
+
+def _upsert_daily_weekly(user_id: int, add_total: int):
+    tday = _today_utc_str()
+    wk = _week_id()
+    with _db() as conn:
+        conn.execute("""
+            INSERT INTO daily_totals(telegram_id, date_utc, total_score, rolls_count)
+            VALUES(?,?,?,1)
+            ON CONFLICT(telegram_id, date_utc) DO UPDATE SET
+              total_score = total_score + excluded.total_score,
+              rolls_count = rolls_count + 1
+        """, (user_id, tday, add_total))
+        conn.execute("""
+            INSERT INTO weekly_totals(telegram_id, week_id, total_score, days_played)
+            VALUES(?,?,?,0)
+            ON CONFLICT(telegram_id, week_id) DO UPDATE SET
+              total_score = total_score + excluded.total_score
+        """, (user_id, wk, add_total))
+        conn.commit()
+
+def _json_error(status: int, code: str, **extra):
+    return JSONResponse(status_code=status, content={"error": code, **extra})
+
+def _get_idempo(conn: sqlite3.Connection, user_id: int, key: str):
+    row = conn.execute("SELECT response_json FROM roll_requests WHERE telegram_id=? AND key=?", (user_id, key)).fetchone()
+    return json.loads(row[0]) if row else None
+
+def _save_idempo(conn: sqlite3.Connection, user_id: int, key: str, resp: dict):
+    conn.execute("INSERT OR IGNORE INTO roll_requests(telegram_id, key, response_json) VALUES (?,?,?)",
+                 (user_id, key, json.dumps(resp, separators=(',', ':'))))
+
+def _resolve_user_id(x_tg_id: Optional[str]) -> int:
+    try:
+        if x_tg_id and x_tg_id.isdigit():
+            return int(x_tg_id)
+    except Exception:
+        pass    # fallback to test id
+    return TEST_USER_ID
+
+@fastapi_app.get("/config")
+async def dice_config(x_tg_id: Optional[str] = Header(None)):
+    uid = _resolve_user_id(x_tg_id)
+    used = _rolls_used_today(uid)
+    return {
+        "rolls_left": max(0, MAX_DAILY - used),
+        "cooldown": COOLDOWN_S,
+        "daily_limit": MAX_DAILY,
+        "user": {"telegram_id": uid},
+    }
+
+@fastapi_app.post("/roll")
+async def dice_roll(request: Request, x_tg_id: Optional[str] = Header(None)):
+    uid = _resolve_user_id(x_tg_id)
+    idem_key = request.headers.get("X-Idempotency-Key")
+
+    if idem_key:
+        with _db() as conn:
+            prev = _get_idempo(conn, uid, idem_key)
+            if prev:
+                return prev
+
+    since = _seconds_since_last_roll(uid)
+    if since < COOLDOWN_S:
+        return _json_error(429, "COOLDOWN_ACTIVE", seconds_remaining=round(COOLDOWN_S - since, 1))
+
+    used = _rolls_used_today(uid)
+    if used >= MAX_DAILY:
+        return _json_error(400, "DAILY_LIMIT_REACHED", daily_limit=MAX_DAILY)
+
+    d1 = random.randint(1, 6); d2 = random.randint(1, 6)
+    total = d1 + d2
+    idx = used + 1
+    tday = _today_utc_str()
+
+    with _db() as conn:
+        conn.execute("""
+            INSERT INTO rolls(telegram_id, date_utc, roll_index, d1, d2, total, created_at)
+            VALUES(?,?,?,?,?,?,datetime('now'))
+        """, (uid, tday, idx, d1, d2, total))
+        conn.commit()
+
+        _upsert_daily_weekly(uid, total)
+
+        resp = {
+            "d1": d1, "d2": d2, "total": total,
+            "roll_index": idx,
+            "rolls_left": MAX_DAILY - idx,
+            "daily_limit": MAX_DAILY,
+        }
+        if idem_key:
+            _save_idempo(conn, uid, idem_key, resp); conn.commit()
+
+    return resp
+
+@fastapi_app.get("/leaderboard/daily")
+async def dice_leaderboard_daily(limit: int = 20, x_tg_id: Optional[str] = Header(None)):
+    tday = _today_utc_str()
+    viewer = _resolve_user_id(x_tg_id)
+    with _db() as conn:
+        top = conn.execute("""
+            SELECT telegram_id, total_score FROM daily_totals
+            WHERE date_utc=? ORDER BY total_score DESC, telegram_id ASC LIMIT ?
+        """, (tday, limit)).fetchall()
+        rows = conn.execute("""
+            SELECT telegram_id, total_score FROM daily_totals
+            WHERE date_utc=? ORDER BY total_score DESC, telegram_id ASC
+        """, (tday,)).fetchall()
+    leaderboard = [{"rank": i+1, "user": str(uid), "score": sc} for i,(uid,sc) in enumerate(top)]
+    your_rank = next((i+1 for i,(uid,_) in enumerate(rows) if uid==viewer), None)
+    your_score = next((sc for uid,sc in rows if uid==viewer), 0)
+    return {"date": tday, "leaderboard": leaderboard, "your_rank": your_rank, "your_score": your_score}
+
+@fastapi_app.get("/leaderboard/weekly")
+async def dice_leaderboard_weekly(limit: int = 20, x_tg_id: Optional[str] = Header(None)):
+    wk = _week_id()
+    viewer = _resolve_user_id(x_tg_id)
+    with _db() as conn:
+        top = conn.execute("""
+            SELECT telegram_id, total_score FROM weekly_totals
+            WHERE week_id=? ORDER BY total_score DESC, telegram_id ASC LIMIT ?
+        """, (wk, limit)).fetchall()
+        rows = conn.execute("""
+            SELECT telegram_id, total_score FROM weekly_totals
+            WHERE week_id=? ORDER BY total_score DESC, telegram_id ASC
+        """, (wk,)).fetchall()
+    leaderboard = [{"rank": i+1, "user": str(uid), "score": sc} for i,(uid,sc) in enumerate(top)]
+    your_rank = next((i+1 for i,(uid,_) in enumerate(rows) if uid==viewer), None)
+    your_score = next((sc for uid,sc) in rows if uid==viewer, 0)
+    return {"week_id": wk, "leaderboard": leaderboard, "your_rank": your_rank, "your_score": your_score}
+
+# ─────────────────────────────────────────────
+# Wallet API (server-to-server)
 class WalletIn(BaseModel):
     telegram_id: int
     username: Optional[str] = ""
@@ -1214,22 +1440,16 @@ class WalletIn(BaseModel):
 def require_api_key(x_api_key: Optional[str] = Header(None)):
     expected = os.getenv("WEBAPP_API_KEY", "").strip()
     if not expected:
-        # If not configured, allow only if you want to keep developing without a key.
-        # To hard-enforce, replace the next line with:
-        # raise HTTPException(status_code=500, detail="Server missing WEBAPP_API_KEY")
-        return
+        return  # dev mode: allow
     if x_api_key != expected:
         raise HTTPException(status_code=401, detail="Invalid API key")
 
 @fastapi_app.post("/api/wallets")
 async def save_wallet(payload: WalletIn, _=Depends(require_api_key)):
-    # super basic validation
     w = (payload.wallet_address or "").strip()
     if not (w and len(w) >= 10):
         raise HTTPException(status_code=400, detail="wallet_address looks invalid")
-
     try:
-        # upsert into your existing SQLite users table via helper you already have
         cache_user_wallet(
             user_id=payload.telegram_id,
             username=(payload.username or "").strip(),
@@ -1239,21 +1459,22 @@ async def save_wallet(payload: WalletIn, _=Depends(require_api_key)):
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"DB error: {e}")
 
-# Optional: allow HEAD on health to silence 405s in logs
-@fastapi_app.api_route("/", methods=["GET", "HEAD"])
-async def health_head_get():
-    return {"ok": True, "service": "telegram-bot"}
+@fastapi_app.get("/api/wallets/{telegram_id}")
+async def get_wallet(telegram_id: int, _=Depends(require_api_key)):
+    try:
+        w = get_cached_wallet(telegram_id)
+        return {"telegram_id": telegram_id, "wallet_address": w}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"DB error: {e}")
 
+# ─────────────────────────────────────────────
+# PTB Application & webhooks
 application = build_application()  # PTB Application instance
-
 
 @fastapi_app.on_event("startup")
 async def _on_startup():
-    # Start PTB without polling; we'll feed it updates from FastAPI
     await application.initialize()
     await application.start()
-
-    # Set Telegram webhook to our public URL so Telegram sends updates to /webhook
     if PUBLIC_URL:
         try:
             await application.bot.set_webhook(
@@ -1267,7 +1488,6 @@ async def _on_startup():
     else:
         print("⚠️ PUBLIC_URL not set; webhook will not be configured.")
 
-
 @fastapi_app.on_event("shutdown")
 async def _on_shutdown():
     try:
@@ -1276,46 +1496,16 @@ async def _on_shutdown():
     except Exception:
         pass
 
-
-@fastapi_app.get("/")
-async def health():
-    return {"ok": True, "service": "telegram-bot"}
-    
-@fastapi_app.get("/api/wallets/{telegram_id}")
-async def get_wallet(telegram_id: int, _=Depends(require_api_key)):
-    try:
-        w = get_cached_wallet(telegram_id)
-        return {"telegram_id": telegram_id, "wallet_address": w}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"DB error: {e}")
-
-
-
 @fastapi_app.post("/webhook")
 async def telegram_webhook(request: Request):
-    # Fast path for Telegram updates → feed into PTB
     data = await request.json()
     update = Update.de_json(data, application.bot)
     await application.process_update(update)
     return {"ok": True}
 
-
-# =========================
+# ─────────────────────────────────────────────
 # Local dev entrypoint
-# =========================
 if __name__ == "__main__":
-    # For local testing: run an HTTP server (visit http://localhost:PORT/)
-    # Use something like ngrok to expose PUBLIC_URL and test webhooks locally.
     import uvicorn
     # IMPORTANT: module path must match your file location (New/main.py → "New.main")
     uvicorn.run("New.main:fastapi_app", host="0.0.0.0", port=PORT, reload=False)
-
-
-
-
-
-
-
-
-
-
