@@ -731,6 +731,25 @@ async def mywallet(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("No wallet linked. Use /connect."); return
     await update.message.reply_text(f"🔎 Address: {addr}\n🌐 Endpoint: {ENJIN_API}")
 
+async def syncwallet(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    uid = update.effective_user.id
+    username = update.effective_user.username or str(uid)
+    # try cached first, then in-memory
+    wallet = get_cached_wallet(uid) or USER_ADDRESS.get(uid)
+    if not wallet:
+        await update.message.reply_text("No wallet saved yet. Use /connect first.")
+        return
+
+    # re-cache (keeps username up to date)
+    cache_user_wallet(uid, username, wallet)
+
+    # push to external WebApp DB
+    def _push():
+        post_wallet_to_webapp(uid, update.effective_user.username, wallet)
+    await asyncio.to_thread(_push)
+
+    await update.message.reply_text("✅ Wallet sync requested. Check your web app DB/logs.")
+
 async def mycollections(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = update.effective_user.id
     addr = USER_ADDRESS.get(uid)
@@ -1148,6 +1167,8 @@ def build_application() -> Application:
     app.add_handler(CommandHandler("setcollection", setcollection))
     app.add_handler(CommandHandler("collections", collections_cmd))
     app.add_handler(CommandHandler("findcollection", findcollection))
+    app.add_handler(CommandHandler("syncwallet", syncwallet))
+
 
     # Callback queries (collections)
     app.add_handler(CallbackQueryHandler(button_handler))
@@ -1279,6 +1300,7 @@ if __name__ == "__main__":
     import uvicorn
     # IMPORTANT: module path must match your file location (New/main.py → "New.main")
     uvicorn.run("New.main:fastapi_app", host="0.0.0.0", port=PORT, reload=False)
+
 
 
 
