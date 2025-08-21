@@ -41,6 +41,9 @@ WEBAPP_URL = os.getenv("WEBAPP_URL", "https://test-97pb.onrender.com/web/index.h
 # External WebApp DB endpoint to save wallets
 WEBAPP_WALLET_ENDPOINT = os.getenv("WEBAPP_WALLET_ENDPOINT", "").strip()
 WEBAPP_API_KEY = os.getenv("WEBAPP_API_KEY", "").strip()
+PUBLIC_URL = os.getenv("PUBLIC_URL", "").rstrip("/")
+WEBAPP_URL = (os.getenv("WEBAPP_URL", "").strip()
+              or (f"{PUBLIC_URL}/web/index.html" if PUBLIC_URL else ""))
 
 if not TELEGRAM_TOKEN:
     raise SystemExit("Missing TELEGRAM_BOT_TOKEN in .env")
@@ -653,30 +656,37 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     u = user_state(uid)
     last = u.get("last_view")
 
-    # WebApp entry button (inline)
-    # WebApp entry button (inline)
-    webapp_row = []
+    # Inline WebApp button (only if we have a URL)
+    open_webapp = None
     if WEBAPP_URL:
-      webapp_row = [InlineKeyboardButton("🚀 Open Web App", web_app=WebAppInfo(url=WEBAPP_URL))]
-    open_webapp = InlineKeyboardMarkup([webapp_row]) if webapp_row else None
+        open_webapp = InlineKeyboardMarkup(
+            [[InlineKeyboardButton("🎲 Play Dice Dash", web_app=WebAppInfo(url=WEBAPP_URL))]]
+        )
 
-)
-
+    # Restore last view if present
     if last == "progress" and u.get("progress"):
         p = dict(u["progress"]); p["have"] = set(p.get("have", []))
         context.user_data["progress"] = p
         await render_progress_page(update, context, edit=False)
-        if open_webapp: await safe_reply(update, "You can also launch the Web App:", open_webapp)
-        return
-    if last == "find" and u.get("find"):
-        context.user_data["find"] = u["find"]; await render_find_page(update, context, edit=False)
-        if open_webapp: await safe_reply(update, "You can also launch the Web App:", open_webapp)
-        return
-    if last == "owned" and u.get("owned"):
-        context.user_data["owned"] = u["owned"]; await render_owned_page(update, context, edit=False)
-        if open_webapp: await safe_reply(update, "You can also launch the Web App:", open_webapp)
+        if open_webapp:
+            await safe_reply(update, "You can also launch the Web App:", open_webapp)
         return
 
+    if last == "find" and u.get("find"):
+        context.user_data["find"] = u["find"]
+        await render_find_page(update, context, edit=False)
+        if open_webapp:
+            await safe_reply(update, "You can also launch the Web App:", open_webapp)
+        return
+
+    if last == "owned" and u.get("owned"):
+        context.user_data["owned"] = u["owned"]
+        await render_owned_page(update, context, edit=False)
+        if open_webapp:
+            await safe_reply(update, "You can also launch the Web App:", open_webapp)
+        return
+
+    # Default welcome + reply keyboard
     msg = (
         "/connect – Link wallet\n"
         "/findcollection <name> – Search by name\n"
@@ -685,9 +695,10 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/mycollections – List owned collections\n"
         "/mywallet – Show wallet\n"
         "/disconnect – Forget saved wallet\n"
-        "/syncwallet – Push wallet to WebApp DB\n"
     )
     await show_main_keyboard(update, "Welcome! Tap a button or use a command.\n\n" + msg)
+
+    # Also offer the WebApp button, if available
     if open_webapp:
         await safe_reply(update, "Or launch the Web App:", open_webapp)
 
@@ -1512,5 +1523,6 @@ if __name__ == "__main__":
     import uvicorn
     # IMPORTANT: module path must match your file location (New/main.py → "New.main")
     uvicorn.run("New.main:fastapi_app", host="0.0.0.0", port=PORT, reload=False)
+
 
 
