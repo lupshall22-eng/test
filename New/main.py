@@ -1133,7 +1133,7 @@ def main():
         except Exception as e:
             print(f"⚠️ Migration failed: {e}")
 
-    def build_application() -> Application:
+def build_application() -> Application:
     app = Application.builder().token(TELEGRAM_TOKEN).build()
 
     # Commands
@@ -1204,6 +1204,7 @@ if __name__ == "__main__":
     # Local dev: run a server you can test with (e.g., via ngrok)
     import uvicorn
     uvicorn.run("New.main:fastapi_app", host="0.0.0.0", port=PORT, reload=False)
+
 
 
 
