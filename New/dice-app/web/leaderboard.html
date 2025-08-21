@@ -1,0 +1,118 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Standings</title>
+<style>
+  html,body{height:100%;margin:0;font-family:Arial,sans-serif;color:#f9e7b5}
+  body{background:transparent}
+  body::before{content:"";position:fixed;inset:0;background:url("/static/backgrounds/default.png") center/cover no-repeat;
+               background-color:#0b0615;z-index:-1}
+  .wrap{max-width:900px;margin:0 auto;padding:20px}
+  .tabs{display:flex;gap:10px;margin-bottom:12px}
+  .tab{padding:10px 14px;border-radius:10px;background:rgba(255,255,255,.08);border:1px solid rgba(255,255,255,.15);
+       cursor:pointer;font-weight:700}
+  .tab.active{background:linear-gradient(90deg,#ffd66b,#f9e7b5);color:#2a1f07}
+  table{width:100%;border-collapse:collapse;background:rgba(12,12,28,.55);border:1px solid rgba(255,255,255,.08);
+        border-radius:14px;overflow:hidden}
+  th,td{padding:12px;border-bottom:1px solid rgba(255,255,255,.08);text-align:left}
+  tr.highlight{background:rgba(255,214,107,.15)}
+  .topbar{display:flex;justify-content:space-between;align-items:center;margin-bottom:10px}
+  .btn{padding:10px 14px;border-radius:10px;border:1px solid rgba(255,255,255,.15);background:rgba(255,255,255,.08);
+       color:#f9e7b5;cursor:pointer}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="topbar">
+    <button class="btn" id="back">← Back</button>
+    <div id="subtitle"></div>
+    <div></div>
+  </div>
+
+  <div class="tabs">
+    <div class="tab active" id="tab-daily">Daily</div>
+    <div class="tab" id="tab-weekly">Weekly</div>
+  </div>
+
+  <table id="board"><thead>
+    <tr><th style="width:70px">Rank</th><th>User</th><th style="width:120px">Score</th></tr>
+  </thead><tbody id="rows">
+    <tr><td colspan="3">Loading…</td></tr>
+  </tbody></table>
+</div>
+
+<script>
+const API = "http://127.0.0.1:8000";
+const rows = document.getElementById("rows");
+const subtitle = document.getElementById("subtitle");
+const tabDaily = document.getElementById("tab-daily");
+const tabWeekly = document.getElementById("tab-weekly");
+const back = document.getElementById("back");
+
+function setActive(which){
+  tabDaily.classList.toggle("active", which==="daily");
+  tabWeekly.classList.toggle("active", which==="weekly");
+}
+
+async function loadDaily(){
+  setActive("daily");
+  rows.innerHTML = `<tr><td colspan="3">Loading…</td></tr>`;
+  const r = await fetch(`${API}/leaderboard/daily?limit=20`);
+  const d = await r.json();
+  subtitle.textContent = `Date: ${d.date}`;
+  const meRank = d.your_rank, meScore = d.your_score;
+  rows.innerHTML = (d.leaderboard||[]).map(it =>
+    `<tr class="${it.rank===meRank?'highlight':''}">
+       <td>#${it.rank}</td><td>${it.user}</td><td>${it.score}</td>
+     </tr>`
+  ).join("") || `<tr><td colspan="3">No entries yet.</td></tr>`;
+  if (!meRank) return;
+  const inTop = (d.leaderboard||[]).some(it=>it.rank===meRank);
+  if (!inTop){
+    rows.insertAdjacentHTML("beforeend",
+      `<tr class="highlight"><td>#${meRank}</td><td>You</td><td>${meScore}</td></tr>`);
+  }
+}
+
+async function loadWeekly(){
+  setActive("weekly");
+  rows.innerHTML = `<tr><td colspan="3">Loading…</td></tr>`;
+  const r = await fetch(`${API}/leaderboard/weekly?limit=20`);
+  const d = await r.json();
+  subtitle.textContent = `Week: ${d.week_id}`;
+  const meRank = d.your_rank, meScore = d.your_score;
+  rows.innerHTML = (d.leaderboard||[]).map(it =>
+    `<tr class="${it.rank===meRank?'highlight':''}">
+       <td>#${it.rank}</td><td>${it.user}</td><td>${it.score}</td>
+     </tr>`
+  ).join("") || `<tr><td colspan="3">No entries yet.</td></tr>`;
+  if (!meRank) return;
+  const inTop = (d.leaderboard||[]).some(it=>it.rank===meRank);
+  if (!inTop){
+    rows.insertAdjacentHTML("beforeend",
+      `<tr class="highlight"><td>#${meRank}</td><td>You</td><td>${meScore}</td></tr>`);
+  }
+}
+
+tabDaily.onclick = loadDaily;
+tabWeekly.onclick = loadWeekly;
+back.onclick = ()=> window.location.href = "/";
+
+loadDaily();
+
+// --- NEW: auto-refresh when someone rolls in another tab ---
+try {
+  const ch = new BroadcastChannel('dice-events');
+  ch.onmessage = (ev)=>{
+    if (ev?.data?.type === 'rolled') {
+      if (tabDaily.classList.contains('active')) loadDaily();
+      else loadWeekly();
+    }
+  };
+} catch {}
+
+</script>
+</body>
+</html>
