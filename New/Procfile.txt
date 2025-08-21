@@ -1,1 +1,1 @@
-web: python New/main.py
+web: uvicorn New.main:fastapi_app --host 0.0.0.0 --port $PORT
