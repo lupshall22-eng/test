@@ -1280,6 +1280,15 @@ async def _on_shutdown():
 @fastapi_app.get("/")
 async def health():
     return {"ok": True, "service": "telegram-bot"}
+    
+@fastapi_app.get("/api/wallets/{telegram_id}")
+async def get_wallet(telegram_id: int, _=Depends(require_api_key)):
+    try:
+        w = get_cached_wallet(telegram_id)
+        return {"telegram_id": telegram_id, "wallet_address": w}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"DB error: {e}")
+
 
 
 @fastapi_app.post("/webhook")
@@ -1300,6 +1309,7 @@ if __name__ == "__main__":
     import uvicorn
     # IMPORTANT: module path must match your file location (New/main.py → "New.main")
     uvicorn.run("New.main:fastapi_app", host="0.0.0.0", port=PORT, reload=False)
+
 
 
 
