@@ -13,6 +13,12 @@ from telegram.ext import (
     Application, CommandHandler, CallbackQueryHandler,
     MessageHandler, ContextTypes, filters,
 )
+from fastapi import FastAPI, Request
+from telegram import Update
+# existing imports stay
+PUBLIC_URL = os.getenv("PUBLIC_URL", "").rstrip("/")
+PORT = int(os.getenv("PORT", "10000"))
+TELEGRAM_WEBHOOK_SECRET = os.getenv("TELEGRAM_WEBHOOK_SECRET", "")
 
 # ─────────────────────────────────────────────
 # In-memory state
@@ -1127,6 +1133,7 @@ def main():
         except Exception as e:
             print(f"⚠️ Migration failed: {e}")
 
+    def build_application() -> Application:
     app = Application.builder().token(TELEGRAM_TOKEN).build()
 
     # Commands
@@ -1154,9 +1161,48 @@ def main():
         app.job_queue.run_repeating(hourly_collections_refresh, interval=3600, first=10)
     except Exception:
         print("ℹ️ JobQueue not available. Skipping hourly refresh.")
+    return app
+
 
     print("Bot starting… Press Ctrl+C to stop.")
     app.run_polling()
+# === FastAPI wrapper for Render ===
+fastapi_app = FastAPI()
+application = build_application()  # PTB Application
+
+@fastapi_app.on_event("startup")
+async def _on_startup():
+    # Start PTB without polling/webhook server; we’ll feed updates manually
+    await application.initialize()
+    await application.start()
+    # Set Telegram webhook to our public URL
+    if PUBLIC_URL:
+        await application.bot.set_webhook(
+            url=f"{PUBLIC_URL}/webhook",
+            secret_token=(TELEGRAM_WEBHOOK_SECRET or None),
+            drop_pending_updates=True,
+        )
+
+@fastapi_app.on_event("shutdown")
+async def _on_shutdown():
+    await application.stop()
+    await application.shutdown()
+
+@fastapi_app.get("/")
+async def health():
+    return {"ok": True, "service": "telegram-bot"}
+
+@fastapi_app.post("/webhook")
+async def telegram_webhook(request: Request):
+    data = await request.json()
+    update = Update.de_json(data, application.bot)
+    # Let PTB process this update
+    await application.process_update(update)
+    return {"ok": True}
 
 if __name__ == "__main__":
-    main()
+    # Local dev: run a server you can test with (e.g., via ngrok)
+    import uvicorn
+    uvicorn.run("New.main:fastapi_app", host="0.0.0.0", port=PORT, reload=False)
+
+
