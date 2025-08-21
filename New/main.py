@@ -1161,8 +1161,8 @@ def main():
         app.job_queue.run_repeating(hourly_collections_refresh, interval=3600, first=10)
     except Exception:
         print("ℹ️ JobQueue not available. Skipping hourly refresh.")
+    
     return app
-
 
     print("Bot starting… Press Ctrl+C to stop.")
     app.run_polling()
@@ -1204,5 +1204,6 @@ if __name__ == "__main__":
     # Local dev: run a server you can test with (e.g., via ngrok)
     import uvicorn
     uvicorn.run("New.main:fastapi_app", host="0.0.0.0", port=PORT, reload=False)
+
 
 
