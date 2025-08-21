@@ -1441,7 +1441,7 @@ async def dice_leaderboard_weekly(limit: int = 20, x_tg_id: Optional[str] = Head
         """, (wk,)).fetchall()
     leaderboard = [{"rank": i+1, "user": str(uid), "score": sc} for i,(uid,sc) in enumerate(top)]
     your_rank = next((i+1 for i,(uid,_) in enumerate(rows) if uid==viewer), None)
-    your_score = next((sc for uid,sc) in rows if uid==viewer, 0)
+    your_score = next((sc for uid, sc in rows if uid == viewer), 0)
     return {"week_id": wk, "leaderboard": leaderboard, "your_rank": your_rank, "your_score": your_score}
 
 # ─────────────────────────────────────────────
@@ -1523,6 +1523,7 @@ if __name__ == "__main__":
     import uvicorn
     # IMPORTANT: module path must match your file location (New/main.py → "New.main")
     uvicorn.run("New.main:fastapi_app", host="0.0.0.0", port=PORT, reload=False)
+
 
 
 
