@@ -654,11 +654,12 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     last = u.get("last_view")
 
     # WebApp entry button (inline)
+    # WebApp entry button (inline)
     webapp_row = []
     if WEBAPP_URL:
-        webapp_row = [InlineKeyboardButton("🚀 Open Web App", web_app=WebAppInfo(url=WEBAPP_URL))]
-    open_webapp = InlineKeyboardMarkup.from_button(
-    InlineKeyboardButton("Open Dice Dash", web_app=WebAppInfo(url=WEBAPP_URL))
+      webapp_row = [InlineKeyboardButton("🚀 Open Web App", web_app=WebAppInfo(url=WEBAPP_URL))]
+    open_webapp = InlineKeyboardMarkup([webapp_row]) if webapp_row else None
+
 )
 
     if last == "progress" and u.get("progress"):
@@ -1511,4 +1512,5 @@ if __name__ == "__main__":
     import uvicorn
     # IMPORTANT: module path must match your file location (New/main.py → "New.main")
     uvicorn.run("New.main:fastapi_app", host="0.0.0.0", port=PORT, reload=False)
+
 
