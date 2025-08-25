@@ -41,6 +41,22 @@
     .left { width: 90%; }
     .roll { width: 92%; }
   }
+  /* --- keep background behind everything & never intercept clicks --- */
+body::before{
+  pointer-events: none;   /* never block clicks */
+  z-index: 0;             /* sit behind */
+}
+
+/* ensure UI sits above the backdrop */
+.wrap, .main, .left, .center, .dice, .buttons, .row2 {
+  position: relative;
+  z-index: 1;
+}
+
+/* Optional: position the background a bit higher (tweak if you like) */
+body::before{
+  background: url("/static/backgrounds/default.png") center top / cover no-repeat;
+}
 </style>
 </head>
 <body>
@@ -78,7 +94,33 @@
   </div>
 
 <script>
-const API = "http://127.0.0.1:8000";
+/* ===== Telegram WebApp boot ===== */
+const tg = window.Telegram?.WebApp;
+try {
+  tg?.ready();
+  tg?.expand();
+  // Optional: adapt background to Telegram theme
+  const bg = tg?.themeParams?.bg_color;
+  if (bg) document.body.style.backgroundColor = bg;
+} catch {}
+
+/* ===== API base & endpoints =====
+   We default to SAME-ORIGIN (recommended: serve web & API from same service).
+   If you ever host the frontend elsewhere, set window.API_BASE globally.
+*/
+const API_BASE = (window.API_BASE?.replace(/\/+$/,'') || location.origin);
+const ENDPOINTS = {
+  CONFIG: `${API_BASE}/config`,
+  ROLL: `${API_BASE}/roll`,
+  DAILY_TOP: `${API_BASE}/leaderboard/daily`
+};
+
+/* Include Telegram user id so backend can attribute rolls */
+const AUTH_HEADERS = {};
+const _uid = tg?.initDataUnsafe?.user?.id;
+if (_uid) AUTH_HEADERS["X-Tg-Id"] = String(_uid);
+
+/* ===== DOM refs ===== */
 const rollBtn = document.getElementById("roll-btn");
 const rollsLeftEl = document.getElementById("rolls-left");
 const die1 = document.getElementById("die1");
@@ -87,8 +129,9 @@ const snapshot = document.getElementById("snapshot");
 const rulesBtn = document.getElementById("rules-btn");
 const leaderboardBtn = document.getElementById("leaderboard-btn");
 
+/* ===== helpers ===== */
 function lockButton(seconds){
-  let t = Math.ceil(seconds);
+  let t = Math.max(1, Math.ceil(seconds));
   rollBtn.disabled = true;
   const orig = rollBtn.textContent;
   rollBtn.textContent = `Wait ${t}s`;
@@ -104,82 +147,100 @@ function lockButton(seconds){
   }, 1000);
 }
 
+/* ===== API calls ===== */
 async function loadConfig(){
-  const r = await fetch(`${API}/config`);
-  const d = await r.json();
-  rollsLeftEl.textContent = `Rolls Left: ${d.rolls_left}/${d.daily_limit}`;
+  try{
+    const r = await fetch(ENDPOINTS.CONFIG, { headers: AUTH_HEADERS });
+    if (!r.ok) throw new Error(`config ${r.status}`);
+    const d = await r.json();
+    const left = Number(d.rolls_left ?? 0);
+    const limit = Number(d.daily_limit ?? 50);
+    rollsLeftEl.textContent = `Loading…`; // will be updated after snapshot
+    rollsLeftEl.textContent = `Rolls Left: ${left}/${limit}`;
+  }catch(e){
+    console.error("[config]", e);
+    rollsLeftEl.textContent = "Loading…";
+  }
 }
 
 async function doRoll(){
-  // --- Idempotency key: prevents double rolls on flaky clicks ---
+  // Idempotency: avoid double-charges if user double taps
   const key = crypto.getRandomValues(new Uint32Array(4)).join("-");
+  try{
+    const r = await fetch(ENDPOINTS.ROLL, {
+      method: "POST",
+      headers: { "X-Idempotency-Key": key, ...AUTH_HEADERS }
+    });
+    const d = await r.json();
 
-  const r = await fetch(`${API}/roll`, {
-    method: "POST",
-    headers: { "X-Idempotency-Key": key }
-  });
-  const d = await r.json();
+    if (d?.error === "COOLDOWN_ACTIVE"){
+      lockButton(d.seconds_remaining || 4);
+      tg?.HapticFeedback?.notificationOccurred?.("warning");
+      return;
+    }
+    if (d?.error === "DAILY_LIMIT_REACHED"){
+      const limit = Number(d.daily_limit ?? 50);
+      rollsLeftEl.textContent = `Rolls Left: 0/${limit}`;
+      rollBtn.disabled = true;
+      rollBtn.textContent = "Come back after midnight UTC";
+      tg?.HapticFeedback?.notificationOccurred?.("warning");
+      return;
+    }
+    if (d?.error){
+      alert(d.error);
+      return;
+    }
 
-  // --- Unified error handling from backend ---
-  if (d.error === "COOLDOWN_ACTIVE"){
-    lockButton(d.seconds_remaining || 4);
-    return;
+    // Success path
+    die1.src = `/static/dice/default/${d.d1}.png`;
+    die2.src = `/static/dice/default/${d.d2}.png`;
+    const left = Number(d.rolls_left ?? 0);
+    const limit = Number(d.daily_limit ?? 50);
+    rollsLeftEl.textContent = `Rolls Left: ${left}/${limit}`;
+    await loadSnapshot();
+
+    // UX: local cooldown + light haptic
+    lockButton(4);
+    tg?.HapticFeedback?.impactOccurred?.("light");
+  }catch(e){
+    console.error("[roll]", e);
+    alert("Network error. Please try again.");
   }
-  if (d.error === "DAILY_LIMIT_REACHED"){
-    rollsLeftEl.textContent = `Rolls Left: 0/50`;
-    rollBtn.disabled = true;
-    rollBtn.textContent = "Come back after midnight UTC";
-    return;
-  }
-  if (d.error){
-    alert(d.error);
-    return;
-  }
-
-  // Success path
-  die1.src = `/static/dice/default/${d.d1}.png`;
-  die2.src = `/static/dice/default/${d.d2}.png`;
-  rollsLeftEl.textContent = `Rolls Left: ${d.rolls_left}/50`;
-
-  // Refresh the left snapshot immediately
-  loadSnapshot();
-
-  // Notify other tabs (leaderboard.html) to refresh
-  try { new BroadcastChannel('dice-events').postMessage({ type:'rolled' }); } catch {}
-
-  // Client-side UX cooldown (server still enforces)
-  lockButton(4);
 }
-
 
 async function loadSnapshot(){
   try{
-    const r = await fetch(`${API}/leaderboard/daily?limit=3`);
+    const r = await fetch(`${ENDPOINTS.DAILY_TOP}?limit=3`, { headers: AUTH_HEADERS });
+    if (!r.ok) throw new Error();
     const d = await r.json();
-    const items = (d.leaderboard || []).map(it => {
-      return `<div class="item"><span>#${it.rank} — ${it.user}</span><span>${it.score}</span></div>`;
-    });
+    const items = (d.leaderboard || []).map(it =>
+      `<div class="item"><span>#${it.rank} — ${it.user}</span><span>${it.score}</span></div>`
+    );
     snapshot.innerHTML = items.join("") || `<div class="item"><span>No rolls yet</span><span>—</span></div>`;
   }catch(e){
     snapshot.innerHTML = `<div class="item"><span>Loading…</span><span>—</span></div>`;
   }
 }
 
+/* ===== events ===== */
 rollBtn.addEventListener("click", doRoll);
 rulesBtn.addEventListener("click", ()=> alert(
 `🎲 How to Play
 
-• You get 50 rolls per day.
+• You get ${Number(new URLSearchParams(location.search).get('limit')||50)} rolls per day.
 • Each roll uses two dice (2–12).
 • Daily standings reset at midnight UTC.
 • Weekly standings add up your daily totals.
 
 Good luck!`
 ));
-leaderboardBtn.addEventListener("click", ()=> window.location.href = "/web/leaderboard.html");
+/* Use the API-served helper route. Requires New/web/leaderboard.html to exist OR the FastAPI /leaderboard route to serve it. */
+leaderboardBtn.addEventListener("click", ()=> window.location.href = "/leaderboard");
 
+/* ===== boot ===== */
 loadConfig();
 loadSnapshot();
 </script>
 </body>
 </html>
+
