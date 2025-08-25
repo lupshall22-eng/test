@@ -5,15 +5,26 @@
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <title>Standings</title>
 <style>
+:root{
+  --bg-size: 1080px;     /* how wide the background is drawn */
+  --bg-y: 34%;           /* vertical anchor: smaller = higher, larger = lower */
   html,body{height:100%;margin:0;font-family:Arial,sans-serif;color:#f9e7b5}
   body{background:transparent}
   /* keep bg behind everything & never intercept clicks */
-  body::before{
-    content:"";position:fixed;inset:0;
-    background:url("/static/backgrounds/default.png") center/cover no-repeat;
-    background-color:#0b0615;z-index:0;pointer-events:none;
-  }
-  .wrap{max-width:900px;margin:0 auto;padding:20px;position:relative;z-index:1}
+body::before{
+  content:"";
+  position:fixed; inset:0;
+  background-image: url("/static/backgrounds/default.png");
+  background-repeat: no-repeat;
+  background-position: 50% var(--bg-y);   /* center X, variable Y */
+  background-size: var(--bg-size) auto;   /* fixed pixel width = predictable layout */
+  background-color:#0b0615;
+  z-index:0;
+  pointer-events:none;
+}
+
+/* ensure your UI sits above the bg */
+  .wrap{ position:relative; z-index:1; }
   .tabs{display:flex;gap:10px;margin-bottom:12px}
   .tab{padding:10px 14px;border-radius:10px;background:rgba(255,255,255,.08);border:1px solid rgba(255,255,255,.15);
        cursor:pointer;font-weight:700}
@@ -138,3 +149,4 @@ try{
 </script>
 </body>
 </html>
+
