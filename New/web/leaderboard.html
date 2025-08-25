@@ -7,9 +7,13 @@
 <style>
   html,body{height:100%;margin:0;font-family:Arial,sans-serif;color:#f9e7b5}
   body{background:transparent}
-  body::before{content:"";position:fixed;inset:0;background:url("/static/backgrounds/default.png") center/cover no-repeat;
-               background-color:#0b0615;z-index:-1}
-  .wrap{max-width:900px;margin:0 auto;padding:20px}
+  /* keep bg behind everything & never intercept clicks */
+  body::before{
+    content:"";position:fixed;inset:0;
+    background:url("/static/backgrounds/default.png") center/cover no-repeat;
+    background-color:#0b0615;z-index:0;pointer-events:none;
+  }
+  .wrap{max-width:900px;margin:0 auto;padding:20px;position:relative;z-index:1}
   .tabs{display:flex;gap:10px;margin-bottom:12px}
   .tab{padding:10px 14px;border-radius:10px;background:rgba(255,255,255,.08);border:1px solid rgba(255,255,255,.15);
        cursor:pointer;font-weight:700}
@@ -22,6 +26,8 @@
   .btn{padding:10px 14px;border-radius:10px;border:1px solid rgba(255,255,255,.15);background:rgba(255,255,255,.08);
        color:#f9e7b5;cursor:pointer}
 </style>
+<!-- Telegram Web App JS (ok if opened inside Telegram) -->
+<script src="https://telegram.org/js/telegram-web-app.js"></script>
 </head>
 <body>
 <div class="wrap">
@@ -44,7 +50,18 @@
 </div>
 
 <script>
-const API = "http://127.0.0.1:8000";
+/* ===== API base & Telegram header =====
+   We use SAME-ORIGIN (your FastAPI serves /leaderboard/*).
+   If you ever host frontend elsewhere, set window.API_BASE before this script.
+*/
+const tg = window.Telegram?.WebApp;
+try{ tg?.ready(); tg?.expand(); }catch{}
+const API_BASE = (window.API_BASE?.replace(/\/+$/,'') || location.origin);
+
+const AUTH_HEADERS = {};
+const _uid = tg?.initDataUnsafe?.user?.id;
+if (_uid) AUTH_HEADERS["X-Tg-Id"] = String(_uid);
+
 const rows = document.getElementById("rows");
 const subtitle = document.getElementById("subtitle");
 const tabDaily = document.getElementById("tab-daily");
@@ -59,51 +76,57 @@ function setActive(which){
 async function loadDaily(){
   setActive("daily");
   rows.innerHTML = `<tr><td colspan="3">Loading…</td></tr>`;
-  const r = await fetch(`${API}/leaderboard/daily?limit=20`);
-  const d = await r.json();
-  subtitle.textContent = `Date: ${d.date}`;
-  const meRank = d.your_rank, meScore = d.your_score;
-  rows.innerHTML = (d.leaderboard||[]).map(it =>
-    `<tr class="${it.rank===meRank?'highlight':''}">
-       <td>#${it.rank}</td><td>${it.user}</td><td>${it.score}</td>
-     </tr>`
-  ).join("") || `<tr><td colspan="3">No entries yet.</td></tr>`;
-  if (!meRank) return;
-  const inTop = (d.leaderboard||[]).some(it=>it.rank===meRank);
-  if (!inTop){
-    rows.insertAdjacentHTML("beforeend",
-      `<tr class="highlight"><td>#${meRank}</td><td>You</td><td>${meScore}</td></tr>`);
+  try{
+    const r = await fetch(`${API_BASE}/leaderboard/daily?limit=20`, { headers: AUTH_HEADERS });
+    const d = await r.json();
+    subtitle.textContent = `Date: ${d.date}`;
+    const meRank = d.your_rank, meScore = d.your_score;
+    rows.innerHTML = (d.leaderboard||[]).map(it =>
+      `<tr class="${it.rank===meRank?'highlight':''}">
+         <td>#${it.rank}</td><td>${it.user}</td><td>${it.score}</td>
+       </tr>`
+    ).join("") || `<tr><td colspan="3">No entries yet.</td></tr>`;
+    if (meRank && !(d.leaderboard||[]).some(it=>it.rank===meRank)){
+      rows.insertAdjacentHTML("beforeend",
+        `<tr class="highlight"><td>#${meRank}</td><td>You</td><td>${meScore}</td></tr>`);
+    }
+  }catch(e){
+    rows.innerHTML = `<tr><td colspan="3">Failed to load.</td></tr>`;
   }
 }
 
 async function loadWeekly(){
   setActive("weekly");
   rows.innerHTML = `<tr><td colspan="3">Loading…</td></tr>`;
-  const r = await fetch(`${API}/leaderboard/weekly?limit=20`);
-  const d = await r.json();
-  subtitle.textContent = `Week: ${d.week_id}`;
-  const meRank = d.your_rank, meScore = d.your_score;
-  rows.innerHTML = (d.leaderboard||[]).map(it =>
-    `<tr class="${it.rank===meRank?'highlight':''}">
-       <td>#${it.rank}</td><td>${it.user}</td><td>${it.score}</td>
-     </tr>`
-  ).join("") || `<tr><td colspan="3">No entries yet.</td></tr>`;
-  if (!meRank) return;
-  const inTop = (d.leaderboard||[]).some(it=>it.rank===meRank);
-  if (!inTop){
-    rows.insertAdjacentHTML("beforeend",
-      `<tr class="highlight"><td>#${meRank}</td><td>You</td><td>${meScore}</td></tr>`);
+  try{
+    const r = await fetch(`${API_BASE}/leaderboard/weekly?limit=20`, { headers: AUTH_HEADERS });
+    const d = await r.json();
+    subtitle.textContent = `Week: ${d.week_id}`;
+    const meRank = d.your_rank, meScore = d.your_score;
+    rows.innerHTML = (d.leaderboard||[]).map(it =>
+      `<tr class="${it.rank===meRank?'highlight':''}">
+         <td>#${it.rank}</td><td>${it.user}</td><td>${it.score}</td>
+       </tr>`
+    ).join("") || `<tr><td colspan="3">No entries yet.</td></tr>`;
+    if (meRank && !(d.leaderboard||[]).some(it=>it.rank===meRank)){
+      rows.insertAdjacentHTMLHTML("beforeend",
+        `<tr class="highlight"><td>#${meRank}</td><td>You</td><td>${meScore}</td></tr>`);
+    }
+  }catch(e){
+    rows.innerHTML = `<tr><td colspan="3">Failed to load.</td></tr>`;
   }
 }
 
 tabDaily.onclick = loadDaily;
 tabWeekly.onclick = loadWeekly;
-back.onclick = ()=> window.location.href = "/";
+/* back to the web app home your FastAPI serves (New/web/index.html) */
+back.onclick = ()=> window.location.href = "/web/";
 
+/* initial load */
 loadDaily();
 
-// --- NEW: auto-refresh when someone rolls in another tab ---
-try {
+/* auto-refresh this page if a roll happens in another tab */
+try{
   const ch = new BroadcastChannel('dice-events');
   ch.onmessage = (ev)=>{
     if (ev?.data?.type === 'rolled') {
@@ -111,8 +134,7 @@ try {
       else loadWeekly();
     }
   };
-} catch {}
-
+}catch{}
 </script>
 </body>
 </html>
